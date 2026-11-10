@@ -1,0 +1,569 @@
+<meta charset="utf-8">
+<title>Solar Neighbourhood Star Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<!--
+  Project 24: a clickable 3D map of every star within 100 parsecs of the Sun.
+  Data file: stars.json, written by prototypes/24_gaia_starmap.py (Gaia DR3 + SIMBAD).
+  To open it on your own computer, run   python3 -m http.server   inside this folder and visit
+  http://localhost:8000 (browsers refuse to load stars.json straight from a file:// page).
+-->
+<style>
+  /* Layout: the star field fills the window; controls float at the top, a star card pops up beside the clicked star.
+     Deliberately one dark look in every theme: it is a view of space. */
+  :root {
+    --bg: #04060b;
+    --panel: rgba(13, 18, 29, 0.88);
+    --ink: #e8edf6;
+    --ink-soft: #97a3b8;
+    --line: #283246;
+    --accent: #7fd4ff;      /* selection ring, active buttons, links */
+    --sun: #ffc94d;
+    --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+    --font-body: "Inter", system-ui, -apple-system, sans-serif;
+    --font-data: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--font-body); overflow: hidden; }
+  #sky { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  .hud {
+    position: fixed; inset: 0 0 auto 0; pointer-events: none;
+    padding-top: calc(14px + env(safe-area-inset-top, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-bottom: 0;
+    display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: flex-start; justify-content: space-between;
+  }
+  .hud > * { pointer-events: auto; }
+  .title { display: grid; gap: 2px; min-width: 0; max-width: 34ch; }
+  .eyebrow { font: 500 11px/1 var(--font-data); letter-spacing: .09em; text-transform: uppercase; color: var(--ink-soft); }
+  h1 { font: 600 clamp(20px, 3vw, 26px)/1.15 var(--font-display); margin: 0; text-wrap: balance; }
+  .hint { margin: 2px 0 0; color: var(--ink-soft); font-size: 13px; }
+
+  .controls { display: grid; gap: 8px; justify-items: end; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-items: center; }
+  .seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .seg button { border: 0; background: transparent; }
+  button {
+    font: 500 13px/1 var(--font-body); color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; cursor: pointer;
+  }
+  button:hover { color: var(--accent); }
+  button[aria-pressed="true"] { background: var(--accent); color: #04121c; }
+  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .search { display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px 0 12px; }
+  .search input { background: transparent; border: 0; color: var(--ink); font: 13px var(--font-body); padding: 8px 0; width: 15ch; outline: none; }
+  .search input::placeholder { color: var(--ink-soft); }
+
+  /* Labels for famous stars and the Sun, placed each frame from 3D positions */
+  .label { position: fixed; left: 0; top: 0; pointer-events: none; font: 500 11.5px/1 var(--font-body);
+           color: var(--ink-soft); white-space: nowrap; text-shadow: 0 0 4px var(--bg), 0 0 8px var(--bg); }
+  .label.sun { color: var(--sun); font-weight: 600; }
+  .label.scale { color: #5c6880; font: 10.5px/1 var(--font-data); }
+  #tip { position: fixed; left: 0; top: 0; pointer-events: none; font: 500 12px/1 var(--font-body);
+         background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+
+  /* The star card */
+  #card {
+    position: fixed; left: 0; top: 0; width: min(330px, calc(100vw - 32px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    padding: 14px 16px 14px; display: grid; gap: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+  }
+  #card header { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; }
+  #swatch { width: 14px; height: 14px; border-radius: 50%; margin-top: 5px; box-shadow: 0 0 10px currentColor; }
+  #card h2 { font: 600 19px/1.2 var(--font-display); margin: 0; overflow-wrap: anywhere; }
+  #card .sub { color: var(--ink-soft); font-size: 12.5px; margin-top: 2px; overflow-wrap: anywhere; }
+  #close { padding: 4px 9px; font-size: 16px; line-height: 1; }
+  #card dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 5px 14px; font-size: 13px; }
+  #card dt { color: var(--ink-soft); }
+  #card dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #card .num { font-family: var(--font-data); font-size: 12.5px; }
+  #card .note { font-size: 12px; color: var(--ink-soft); margin: 0; }
+  #card .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #card a { color: var(--accent); font-size: 13px; }
+
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; pointer-events: none;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px;
+    font-size: 11.5px; color: #66728a;
+  }
+  footer a { color: inherit; pointer-events: auto; }
+  #status { color: var(--ink-soft); }
+
+  @media (max-width: 640px) {
+    .controls { justify-items: start; }
+    .row { justify-content: flex-start; }
+    .hint { display: none; }
+    #card { left: 50% !important; top: auto !important; transform: translateX(-50%) !important;
+            bottom: calc(12px + env(safe-area-inset-bottom, 0px)); position: fixed; }
+    footer { display: none; }
+  }
+</style>
+
+<canvas id="sky" aria-label="3D map of stars within 100 parsecs of the Sun"></canvas>
+
+<div class="hud">
+  <div class="title">
+    <div class="eyebrow">Gaia DR3 · within 100 pc</div>
+    <h1>Our stellar neighbourhood</h1>
+    <p class="hint" id="hint">Drag to rotate, scroll to zoom, click any star to identify it.</p>
+  </div>
+  <div class="controls">
+    <div class="row">
+      <div class="seg" role="group" aria-label="Viewpoint">
+        <button id="mode-orbit" aria-pressed="true">Fly around</button>
+        <button id="mode-sun" aria-pressed="false">Stand at the Sun</button>
+      </div>
+      <label class="search" for="find">
+        <input id="find" list="named" placeholder="Find a star…" autocomplete="off">
+        <datalist id="named"></datalist>
+      </label>
+    </div>
+    <div class="row" role="group" aria-label="Highlight a group">
+      <button id="grp-all" data-group="all" aria-pressed="true">All stars</button>
+      <button id="grp-wd" data-group="wd" aria-pressed="false">White dwarfs</button>
+      <button id="grp-giants" data-group="giants" aria-pressed="false">Giants</button>
+      <button id="grp-named" data-group="named" aria-pressed="false">Named stars</button>
+      <button id="labels" aria-pressed="true">Labels</button>
+    </div>
+  </div>
+</div>
+
+<div id="labels-layer"></div>
+<div id="tip" hidden></div>
+
+<section id="card" hidden aria-live="polite">
+  <header>
+    <span id="swatch"></span>
+    <div><h2 id="c-title"></h2><div class="sub" id="c-sub"></div></div>
+    <button id="close" aria-label="Close">×</button>
+  </header>
+  <dl id="c-facts"></dl>
+  <p class="note" id="c-note"></p>
+  <div class="actions">
+    <button id="c-centre">Centre view here</button>
+    <a id="c-simbad" href="#" target="_blank" rel="noopener">Look up in SIMBAD ↗</a>
+  </div>
+</section>
+
+<footer>
+  <span id="status">Loading stars…</span>
+  <span>Data: ESA Gaia DR3 (Gaia Collaboration, Vallenari et al. 2023) · SIMBAD (Wenger et al. 2000), CDS, via the CfA mirror</span>
+</footer>
+
+<script>
+// ============================================================ helpers for the star card
+const GREEK = { alf:"α", bet:"β", gam:"γ", del:"δ", eps:"ε", zet:"ζ", eta:"η", tet:"θ", iot:"ι", kap:"κ", lam:"λ",
+  "mu.":"μ", "nu.":"ν", ksi:"ξ", omi:"ο", "pi.":"π", rho:"ρ", sig:"σ", tau:"τ", ups:"υ", phi:"φ", chi:"χ", psi:"ψ", ome:"ω" };
+// SIMBAD writes "* alf CMa" for α CMa, "V* AX Mic" for the variable star AX Mic, "NAME ..." for common names.
+function prettyId(id) {
+  if (!id) return "";
+  let s = id.replace(/^NAME /, "").replace(/^(\*\*|\*|V\*) /, "");
+  return s.replace(/^(alf|bet|gam|del|eps|zet|eta|tet|iot|kap|lam|mu\.|nu\.|ksi|omi|pi\.|rho|sig|tau|ups|phi|chi|psi|ome)(0?(\d))?(?= )/,
+    (m, g, _, n) => GREEK[g] + (n || ""));
+}
+// SIMBAD object-type codes, in plain words (anything else is shown as its code).
+const TYPES = {
+  "*": "Star", "PM*": "Star with high proper motion (moves fast across the sky)", "WD*": "White dwarf",
+  "WD?": "White dwarf candidate", "LM*": "Low-mass star", "BD*": "Brown dwarf", "BD?": "Brown dwarf candidate",
+  "**": "Double star", "SB*": "Spectroscopic binary", "EB*": "Eclipsing binary", "V*": "Variable star",
+  "BY*": "BY Draconis variable (spotted star)", "RS*": "RS CVn variable (active binary)", "Er*": "Eruptive variable",
+  "Fl*": "Flare star", "Ro*": "Rotating variable", "dS*": "Delta Scuti variable (pulsating star)",
+  "gD*": "Gamma Doradus variable (pulsating star)", "a2*": "Alpha2 CVn variable (magnetic star)",
+  "RG*": "Red giant branch star", "HB*": "Horizontal branch star", "Em*": "Emission-line star", "Y*O": "Young star",
+  "Y*?": "Young star candidate", "TT*": "T Tauri star (very young)", "Or*": "Orion variable (young star)",
+  "Pe*": "Peculiar star", "MS*": "MS-type star", "CV*": "Cataclysmic variable", "HS*": "Hot subdwarf",
+  "Be*": "Be star (fast-spinning hot star)", "El*": "Ellipsoidal variable", "SX*": "SX Phoenicis variable",
+  "PM?": "High proper-motion star candidate", "Pl": "Planet", "Pl?": "Planet candidate",
+};
+// Rough kind of star from where it sits on the HR diagram (colour c = BP-RP, absolute magnitude g).
+function hrKind(c, g) {
+  if (g > 3.33 * c + 9.5) return "White dwarf (hot, Earth-sized remnant of a star)";
+  if (g < 3.5 && c > 0.9) return "Giant (an old star that has swollen up)";
+  const type = c < -0.1 ? "B" : c < 0.38 ? "A" : c < 0.7 ? "F" : c < 0.98 ? "G" : c < 1.84 ? "K" : "M";
+  const words = { B: "hot blue-white", A: "hot white", F: "white", G: "yellow, Sun-like", K: "orange", M: "cool red" };
+  return `Main-sequence ${type}-type star (${words[type]})`;
+}
+// Approximate star colour for a given BP-RP colour (blackbody-like tints).
+const TINTS = [[-0.4,"#9bb0ff"],[0,"#aabfff"],[0.35,"#d5e0ff"],[0.6,"#f6f4ff"],[0.82,"#fff4e6"],[1.2,"#ffd6a5"],
+               [1.8,"#ffbb73"],[2.5,"#ff9d55"],[3.5,"#ff8040"],[5,"#ff6030"]];
+function tint(c) {
+  if (c <= TINTS[0][0]) return new THREE.Color(TINTS[0][1]);
+  for (let i = 1; i < TINTS.length; i++) if (c <= TINTS[i][0]) {
+    const [c0, h0] = TINTS[i-1], [c1, h1] = TINTS[i];
+    return new THREE.Color(h0).lerp(new THREE.Color(h1), (c - c0) / (c1 - c0));
+  }
+  return new THREE.Color(TINTS[TINTS.length-1][1]);
+}
+const fmtNum = (v, d = 1) => v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+function fmtTimes(x) {   // 0.0031 -> "0.003×", 25.3 -> "25×"
+  if (x >= 10) return `${Math.round(x).toLocaleString()}×`;
+  if (x >= 0.1) return `${x.toFixed(1)}×`;
+  return `${x.toPrecision(1)}×`;
+}
+
+// ============================================================ the 3D scene
+const canvas = document.getElementById("sky");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.001, 3000);
+camera.up.set(0, 0, 1);                       // Galactic north is "up"
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+
+const ORBIT_HOME = new THREE.Vector3(150, -200, 110);
+let mode = "orbit", stars, N = 0, pos, absg, colour, pickable, selected = -1;
+let geometry, material;
+
+// Scale rings in the Galactic plane (25, 50, 100 pc), so distances are easy to judge when flying around.
+const rings = new THREE.Group();
+for (const r of [25, 50, 100]) {
+  const pts = []; for (let a = 0; a <= 128; a++) pts.push(new THREE.Vector3(r * Math.cos(a / 64 * Math.PI), r * Math.sin(a / 64 * Math.PI), 0));
+  rings.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x1f2a3d, transparent: true, opacity: 0.9 })));
+}
+scene.add(rings);
+
+// The Sun, drawn as a gold dot at the origin.
+const sunDot = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3)),
+  new THREE.PointsMaterial({ color: 0xffc94d, size: 9, sizeAttenuation: false }));
+scene.add(sunDot);
+
+// Ring that marks the selected star.
+const ringGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
+const ringMat = new THREE.ShaderMaterial({
+  transparent: true, depthTest: false,
+  uniforms: { uColor: { value: new THREE.Color(0x7fd4ff) }, uPx: { value: renderer.getPixelRatio() } },
+  vertexShader: `uniform float uPx; void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_PointSize = 28.0 * uPx; }`,
+  fragmentShader: `uniform vec3 uColor; void main(){ float r = length(gl_PointCoord - 0.5);
+    float a = smoothstep(0.5, 0.44, r) * smoothstep(0.34, 0.40, r); if (a < 0.01) discard; gl_FragColor = vec4(uColor, a); }`,
+});
+const selRing = new THREE.Points(ringGeo, ringMat); selRing.visible = false; scene.add(selRing);
+
+// Star shader: each star is a soft round dot in its own colour.
+//  "Fly around": dot size depends on the star's true brightness (absolute magnitude) and shrinks with distance from the camera.
+//  "Stand at the Sun": dot size depends on how bright the star looks from Earth (apparent magnitude), like the real sky.
+const STAR_VERTEX = `
+  attribute float absg; attribute vec3 tint; attribute float dim;
+  uniform float uSunMode; uniform float uPx; uniform float uGroup;
+  varying vec3 vTint; varying float vAlpha;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float d = max(length(position), 0.5);
+    float app = absg + 5.0 * log(d / 10.0) / log(10.0);
+    float size, alpha;
+    if (uSunMode > 0.5) {
+      size = clamp(10.5 - 1.15 * app, 1.6, 15.0);
+      alpha = clamp(1.25 - 0.09 * app, 0.28, 1.0);
+    } else {
+      size = clamp((15.0 - absg) * 0.3, 1.0, 7.0) * clamp(260.0 / -mv.z, 0.35, 3.0);
+      alpha = 0.55;
+    }
+    if (uGroup > 0.5 && dim > 0.5) { size = max(size, 3.4); alpha = 1.0; }   // make a highlighted group stand out
+    gl_PointSize = size * uPx * (dim > 0.5 ? 1.0 : 0.7);
+    vTint = tint; vAlpha = alpha * dim;
+  }`;
+const STAR_FRAGMENT = `
+  varying vec3 vTint; varying float vAlpha;
+  void main() {
+    float r = length(gl_PointCoord - 0.5);
+    if (r > 0.5) discard;
+    float core = smoothstep(0.5, 0.0, r);
+    gl_FragColor = vec4(vTint * (0.55 + 0.6 * core), vAlpha * core);
+  }`;
+
+// ============================================================ labels (famous stars, the Sun, ring distances)
+const labelLayer = document.getElementById("labels-layer");
+let labels = [];
+function addLabel(text, x, y, z, cls = "") {
+  const el = document.createElement("div"); el.className = "label " + cls; el.textContent = text;
+  labelLayer.appendChild(el); labels.push({ el, p: new THREE.Vector3(x, y, z), cls });
+}
+addLabel("Sun", 0, 0, 0, "sun");
+for (const r of [25, 50, 100]) addLabel(`${r} pc`, r * 0.7071, -r * 0.7071, 0, "scale");
+addLabel("→ Galactic centre", 112, 0, 0, "scale");
+
+// ============================================================ load data and build the star cloud
+fetch("stars.json")
+  .then(r => { if (!r.ok) throw new Error(`stars.json returned HTTP ${r.status}`); return r.json(); })
+  .then(build)
+  .catch(err => { document.getElementById("status").textContent =
+    `Could not load the star data (${err.message}). If you opened this file directly, run "python3 -m http.server" in this folder.`; });
+
+function build(data) {
+  stars = data; N = data.x.length;
+  pos = new Float32Array(N * 3); absg = new Float32Array(N); const tints = new Float32Array(N * 3);
+  const dim = new Float32Array(N).fill(1); pickable = new Uint8Array(N).fill(1);
+  for (let i = 0; i < N; i++) {
+    pos[3*i] = data.x[i]; pos[3*i+1] = data.y[i]; pos[3*i+2] = data.z[i];
+    absg[i] = data.abs_g[i];
+    const t = tint(data.colour[i]); tints[3*i] = t.r; tints[3*i+1] = t.g; tints[3*i+2] = t.b;
+  }
+  geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geometry.setAttribute("absg", new THREE.BufferAttribute(absg, 1));
+  geometry.setAttribute("tint", new THREE.BufferAttribute(tints, 3));
+  geometry.setAttribute("dim", new THREE.BufferAttribute(dim, 1));
+  material = new THREE.ShaderMaterial({
+    vertexShader: STAR_VERTEX, fragmentShader: STAR_FRAGMENT, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uSunMode: { value: 0 }, uPx: { value: renderer.getPixelRatio() }, uGroup: { value: 0 } },
+  });
+  scene.add(new THREE.Points(geometry, material));
+
+  // Labels for the brightest named stars in our sky, plus the two closest named stars.
+  const famous = [];
+  for (let i = 0; i < N; i++) if (data.name[i]) famous.push([apparentMag(i), i]);
+  famous.sort((a, b) => a[0] - b[0]);
+  const labelled = new Set(famous.slice(0, 22).map(f => f[1]));
+  for (let i = 0; i < N; i++) if (["Proxima Centauri", "Barnard's star"].includes(data.name[i])) labelled.add(i);
+  for (const i of labelled) addLabel(data.name[i], data.x[i], data.y[i], data.z[i]);
+
+  // Search list: every named star.
+  const list = document.getElementById("named");
+  famous.map(f => f[1]).sort((a, b) => data.name[a].localeCompare(data.name[b]))
+    .forEach(i => { const o = document.createElement("option"); o.value = data.name[i]; list.appendChild(o); });
+
+  document.getElementById("status").textContent =
+    `${N.toLocaleString()} stars: a random 60,000 of Gaia's ${data.total_stars.toLocaleString()}, every named Gaia star, and ${data.bright_added} naked-eye stars from SIMBAD.`;
+  setMode("orbit");
+  const start = data.name.indexOf("Sirius");     // open on a familiar star so the card is visible at once
+  if (start >= 0) select(start);
+}
+
+const dist = i => Math.hypot(pos[3*i], pos[3*i+1], pos[3*i+2]);
+const apparentMag = i => absg[i] + 5 * Math.log10(Math.max(dist(i), 0.5) / 10);
+
+// ============================================================ viewpoint modes
+function setMode(m) {
+  mode = m;
+  document.getElementById("mode-orbit").setAttribute("aria-pressed", String(m === "orbit"));
+  document.getElementById("mode-sun").setAttribute("aria-pressed", String(m === "sun"));
+  if (material) material.uniforms.uSunMode.value = m === "sun" ? 1 : 0;
+  sunDot.visible = rings.visible = m === "orbit";
+  document.getElementById("c-centre").hidden = m !== "orbit";
+  if (m === "orbit") {
+    camera.fov = 55; controls.target.set(0, 0, 0); camera.position.copy(ORBIT_HOME);
+    controls.enableZoom = true; controls.enablePan = true; controls.rotateSpeed = 1;
+    controls.minDistance = 2; controls.maxDistance = 700;
+    document.getElementById("hint").textContent = "Drag to rotate, scroll to zoom, click any star to identify it.";
+  } else {
+    // Stand at the Sun: the camera sits (almost) exactly at the origin and turns to look around the sky.
+    camera.fov = 70; controls.target.set(0, 0, 0);
+    camera.position.set(-0.001, 0, 0);                 // look towards the Galactic centre
+    controls.enableZoom = false; controls.enablePan = false; controls.rotateSpeed = -0.35;
+    controls.minDistance = 0.001; controls.maxDistance = 0.001;
+    document.getElementById("hint").textContent = "You are at the Sun. Drag to look around, scroll to zoom in, click a star.";
+  }
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+document.getElementById("mode-orbit").onclick = () => setMode("orbit");
+document.getElementById("mode-sun").onclick = () => setMode("sun");
+canvas.addEventListener("wheel", e => {             // in Sun mode, scrolling zooms by narrowing the field of view
+  if (mode !== "sun") return;
+  e.preventDefault();
+  camera.fov = Math.min(100, Math.max(8, camera.fov * (e.deltaY > 0 ? 1.08 : 0.92)));
+  camera.updateProjectionMatrix();
+}, { passive: false });
+
+// ============================================================ highlight groups
+const GROUPS = {
+  all: () => true,
+  wd: i => absg[i] > 3.33 * stars.colour[i] + 9.5,
+  giants: i => absg[i] < 3.5 && stars.colour[i] > 0.9,
+  named: i => !!stars.name[i],
+};
+document.querySelectorAll("[data-group]").forEach(btn => btn.onclick = () => {
+  if (!stars) return;
+  const test = GROUPS[btn.dataset.group], dim = geometry.attributes.dim.array;
+  for (let i = 0; i < N; i++) { const on = test(i); dim[i] = on ? 1 : 0.07; pickable[i] = on ? 1 : 0; }
+  geometry.attributes.dim.needsUpdate = true;
+  material.uniforms.uGroup.value = btn.dataset.group === "all" ? 0 : 1;
+  document.querySelectorAll("[data-group]").forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+});
+const labelsBtn = document.getElementById("labels");
+labelsBtn.onclick = () => {
+  const on = labelsBtn.getAttribute("aria-pressed") !== "true";
+  labelsBtn.setAttribute("aria-pressed", String(on)); labelLayer.hidden = !on;
+};
+
+// ============================================================ clicking and hovering on stars
+// We find the star whose dot is closest to the pointer on screen (within a few pixels).
+const projM = new THREE.Matrix4();
+function pick(clientX, clientY) {
+  if (!stars) return -1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  projM.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const e = projM.elements;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (!pickable[i]) continue;
+    const x = pos[3*i], y = pos[3*i+1], z = pos[3*i+2];
+    const cw = e[3]*x + e[7]*y + e[11]*z + e[15];
+    if (cw <= 0) continue;                                  // behind the camera
+    const sx = ((e[0]*x + e[4]*y + e[8]*z + e[12]) / cw * 0.5 + 0.5) * w;
+    const sy = (1 - ((e[1]*x + e[5]*y + e[9]*z + e[13]) / cw * 0.5 + 0.5)) * h;
+    const d2 = (sx - clientX) ** 2 + (sy - clientY) ** 2;
+    if (d2 < bestD) { bestD = d2; best = i; }
+  }
+  return bestD <= 12 * 12 ? best : -1;
+}
+let down = null;
+canvas.addEventListener("pointerdown", e => { down = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener("pointerup", e => {
+  if (!down) return;
+  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
+  if (moved > 5) return;                                     // that was a drag, not a click
+  const i = pick(e.clientX, e.clientY);
+  if (i >= 0) select(i); else closeCard();
+});
+const tip = document.getElementById("tip");
+let hoverQueued = false, lastMove = null;
+canvas.addEventListener("pointermove", e => {
+  lastMove = e;
+  if (down || hoverQueued || e.pointerType === "touch") return;
+  hoverQueued = true;
+  requestAnimationFrame(() => {
+    hoverQueued = false;
+    const i = pick(lastMove.clientX, lastMove.clientY);
+    canvas.style.cursor = i >= 0 ? "pointer" : "grab";
+    if (i >= 0 && i !== selected) {
+      tip.textContent = displayName(i); tip.hidden = false;
+      tip.style.transform = `translate(${lastMove.clientX + 14}px, ${lastMove.clientY + 10}px)`;
+    } else tip.hidden = true;
+  });
+});
+canvas.addEventListener("pointerleave", () => { tip.hidden = true; });
+
+function displayName(i) {
+  return stars.name[i] || prettyId(stars.simbad[i]) || `Gaia DR3 ${stars.gaia[i]}`;
+}
+
+// ============================================================ the star card
+const card = document.getElementById("card");
+function select(i) {
+  selected = i; tip.hidden = true;
+  ringGeo.attributes.position.array.set([pos[3*i], pos[3*i+1], pos[3*i+2]]);
+  ringGeo.attributes.position.needsUpdate = true; selRing.visible = true;
+
+  const fromGaia = !!stars.gaia[i], c = stars.colour[i], g = absg[i], d = dist(i), m = apparentMag(i);
+  const sw = tint(c); document.getElementById("swatch").style.color = document.getElementById("swatch").style.background = `#${sw.getHexString()}`;
+  document.getElementById("c-title").textContent = displayName(i);
+  const cat = prettyId(stars.simbad[i]);
+  const subParts = [];
+  if (stars.name[i] && cat && cat !== stars.name[i]) subParts.push(cat);
+  if (fromGaia && displayName(i) !== `Gaia DR3 ${stars.gaia[i]}`) subParts.push(`Gaia DR3 ${stars.gaia[i]}`);
+  if (!subParts.length) subParts.push("No common or catalogue name");
+  document.getElementById("c-sub").textContent = subParts.join(" · ");
+
+  const sunAbs = fromGaia ? 4.67 : 4.83;           // the Sun's absolute magnitude in Gaia G and in V
+  const lum = Math.pow(10, -0.4 * (g - sunAbs));
+  const seen = m < 6 ? "visible to the naked eye" : m < 9 ? "binoculars needed" : "telescope needed";
+  const facts = [
+    ["What it is", hrKind(c, g)],
+    ["SIMBAD type", stars.type[i] ? (TYPES[stars.type[i]] || stars.type[i]) : "Not in SIMBAD"],
+    ["Distance", `<span class="num">${fmtNum(d, d < 10 ? 2 : 1)} pc</span> (${fmtNum(d * 3.2616, 0)} light-years)`],
+    ["Brightness from Earth", `<span class="num">mag ${fmtNum(m, 1)}</span>, ${seen}`],
+    ["Light output", `≈ ${fmtTimes(lum)} the Sun's`],
+    fromGaia ? ["Colour BP − RP", `<span class="num">${fmtNum(c, 2)}</span>`]
+             : ["Colour B − V", stars.bv[i] == null ? "–" : `<span class="num">${fmtNum(stars.bv[i], 2)}</span>`],
+  ];
+  document.getElementById("c-facts").innerHTML = facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  document.getElementById("c-note").textContent = fromGaia
+    ? "Position and brightness from Gaia DR3."
+    : "Too bright for our Gaia sample, so its position and brightness come from SIMBAD (mostly the Hipparcos satellite).";
+  const ident = stars.simbad[i] || `Gaia DR3 ${stars.gaia[i]}`;
+  document.getElementById("c-simbad").href = `https://simbad.cfa.harvard.edu/simbad/sim-id?Ident=${encodeURIComponent(ident)}`;
+  document.getElementById("c-centre").hidden = mode !== "orbit";
+  card.hidden = false;
+  placeCard();
+}
+function closeCard() { selected = -1; card.hidden = true; selRing.visible = false; }
+document.getElementById("close").onclick = closeCard;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeCard(); });
+
+// Centre the view on the selected star (fly-around mode).
+let flyTo = null;
+document.getElementById("c-centre").onclick = () => {
+  if (selected < 0) return;
+  const target = new THREE.Vector3(pos[3*selected], pos[3*selected+1], pos[3*selected+2]);
+  const offset = camera.position.clone().sub(controls.target).setLength(Math.max(12, Math.min(60, dist(selected) * 0.6)));
+  flyTo = { target, camPos: target.clone().add(offset), t: 0 };
+};
+
+// Search: pick a named star, highlight it, and point the camera at it.
+document.getElementById("find").addEventListener("change", e => {
+  if (!stars) return;
+  const q = e.target.value.trim().toLowerCase();
+  const i = stars.name.findIndex(n => n.toLowerCase() === q);
+  if (i < 0) return;
+  select(i);
+  if (mode === "orbit") document.getElementById("c-centre").click();
+  else {   // turn to face the star: put the camera just behind the Sun, opposite the star
+    const dir = new THREE.Vector3(pos[3*i], pos[3*i+1], pos[3*i+2]).normalize();
+    camera.position.copy(dir.multiplyScalar(-0.001)); controls.update();
+  }
+  e.target.blur();
+});
+
+// Keep the card next to its star as the view moves (on phones it sits at the bottom instead).
+const tmpV = new THREE.Vector3();
+function placeCard() {
+  if (selected < 0 || matchMedia("(max-width: 640px)").matches) return;
+  tmpV.set(pos[3*selected], pos[3*selected+1], pos[3*selected+2]).project(camera);
+  const w = innerWidth, h = innerHeight, cw = card.offsetWidth, ch = card.offsetHeight;
+  let x = (tmpV.x * 0.5 + 0.5) * w + 22, y = (-tmpV.y * 0.5 + 0.5) * h - 30;
+  if (tmpV.z > 1) { x = w - cw - 16; y = h - ch - 40; }         // star is behind us: park the card
+  if (x + cw > w - 16) x = (tmpV.x * 0.5 + 0.5) * w - cw - 22;  // flip to the left side of the star
+  x = Math.max(16, Math.min(x, w - cw - 16)); y = Math.max(110, Math.min(y, h - ch - 34));
+  card.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+// ============================================================ draw loop
+function resize() {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+function placeLabels() {
+  if (labelLayer.hidden) return;
+  const w = innerWidth, h = innerHeight;
+  for (const L of labels) {
+    const hideInSun = mode === "sun" && (L.cls === "sun" || L.cls === "scale");
+    // When flying around, a star's name only appears once you are within 40 pc of it,
+    // otherwise all the famous (nearby) stars pile up on top of the Sun.
+    const tooFar = mode === "orbit" && L.cls === "" && camera.position.distanceTo(L.p) > 40;
+    tmpV.copy(L.p).project(camera);
+    if (hideInSun || tooFar || tmpV.z > 1 || Math.abs(tmpV.x) > 1.1 || Math.abs(tmpV.y) > 1.1) { L.el.hidden = true; continue; }
+    L.el.hidden = false;
+    L.el.style.transform = `translate(${(tmpV.x * 0.5 + 0.5) * w + 8}px, ${(-tmpV.y * 0.5 + 0.5) * h - 6}px)`;
+  }
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (flyTo) {
+    flyTo.t = Math.min(1, flyTo.t + 0.04);
+    const k = 1 - Math.pow(1 - flyTo.t, 3);
+    controls.target.lerp(flyTo.target, k); camera.position.lerp(flyTo.camPos, k);
+    if (flyTo.t >= 1) flyTo = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  placeLabels(); placeCard();
+}
+animate();
+</script>
