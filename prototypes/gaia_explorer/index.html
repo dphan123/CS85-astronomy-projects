@@ -1,0 +1,235 @@
+<meta charset="utf-8">
+<title>Gaia 100 pc Explorer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<!--
+  Project 24 Thursday prototype: lasso stars on the HR diagram (left) and see where they are in 3D (right).
+  Data file: stars.json, written by prototypes/24_gaia_explorer.py from ESA Gaia DR3.
+  To open it on your own computer, run   python3 -m http.server   inside this folder and visit
+  http://localhost:8000 (browsers refuse to load stars.json straight from a file:// page).
+-->
+<style>
+  /* Layout: a short header with region presets, then two linked plots side by side (stacked on phones). */
+  :root {
+    --bg: #f6f7fa;          /* page: cool off-white, like a star chart */
+    --panel: #ffffff;
+    --ink: #17202c;
+    --ink-soft: #566173;
+    --line: #dde2ea;
+    --star: #a9b2bf;        /* every star, unselected */
+    --pick: #2a6fdb;        /* the stars you selected */
+    --sun: #d99a0b;
+    --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+    --font-body: "Inter", system-ui, -apple-system, sans-serif;
+    --font-data: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1219; --panel: #141b25; --ink: #e6ebf2; --ink-soft: #9aa6b8; --line: #263142;
+      --star: #4a5568; --pick: #6ea4ff; --sun: #f2b632; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1219; --panel: #141b25; --ink: #e6ebf2; --ink-soft: #9aa6b8; --line: #263142;
+    --star: #4a5568; --pick: #6ea4ff; --sun: #f2b632; color-scheme: dark;
+  }
+
+  body {
+    background: var(--bg); color: var(--ink); font: 15px/1.5 var(--font-body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 32px;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 18px; }
+  header { display: grid; gap: 6px; }
+  .eyebrow { font: 500 12px/1 var(--font-data); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+  h1 { font: 600 clamp(24px, 4vw, 34px)/1.15 var(--font-display); margin: 0; text-wrap: balance; }
+  .lede { margin: 0; color: var(--ink-soft); max-width: 68ch; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .controls span { font-size: 13px; color: var(--ink-soft); margin-right: 4px; }
+  button {
+    font: 500 14px/1 var(--font-body); color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 999px; padding: 9px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--pick); }
+  button[aria-pressed="true"] { background: var(--pick); border-color: var(--pick); color: var(--panel); }
+  button:focus-visible { outline: 2px solid var(--pick); outline-offset: 2px; }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 14px; color: var(--ink-soft); }
+  .stats b { font: 500 18px/1.2 var(--font-data); color: var(--ink); font-variant-numeric: tabular-nums; display: block; }
+
+  .plots { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px 6px; min-width: 0; }
+  .card h2 { font: 600 15px/1.3 var(--font-display); margin: 0 0 2px; }
+  .card p { margin: 0; font-size: 13px; color: var(--ink-soft); }
+  .plot { height: 560px; }
+  @media (max-width: 860px) { .plots { grid-template-columns: minmax(0, 1fr); } .plot { height: 440px; } }
+
+  #status { color: var(--ink-soft); }
+  footer { font-size: 12.5px; color: var(--ink-soft); max-width: 90ch; }
+  footer a { color: var(--pick); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">CS85 · Project 24 · Gaia DR3</div>
+    <h1>Our neighbourhood in 3D</h1>
+    <p class="lede">Every dot is a real star within 100 parsecs (326 light-years) of the Sun. Draw a lasso around any
+      part of the HR diagram on the left, or pick a group below, and the 3D map on the right shows where those stars are.</p>
+  </header>
+
+  <div class="controls" role="group" aria-label="Select a region of the HR diagram">
+    <span>Select:</span>
+    <button id="btn-wd" data-region="wd">White dwarfs</button>
+    <button id="btn-giants" data-region="giants">Giants</button>
+    <button id="btn-sunlike" data-region="sunlike">Sun-like stars</button>
+    <button id="btn-hot" data-region="hot">Hot blue stars</button>
+    <button id="btn-red" data-region="red">Red dwarfs</button>
+    <button id="btn-clear" data-region="none">Clear</button>
+  </div>
+
+  <div class="stats" aria-live="polite">
+    <div><b id="n-sel">–</b>stars selected</div>
+    <div><b id="d-sel">–</b>median distance</div>
+    <div><b id="z-sel">–</b>median height above/below the disc</div>
+    <div><b id="z-all">–</b>same, for all stars</div>
+  </div>
+
+  <div class="plots">
+    <div class="card">
+      <h2>HR diagram</h2>
+      <p>Colour vs. true brightness. Drag to lasso a region; double-click to clear.</p>
+      <div id="hr" class="plot"></div>
+    </div>
+    <div class="card">
+      <h2>3D map around the Sun</h2>
+      <p>Distances in parsecs. The Milky Way's disc is the flat x–y plane. Drag to rotate, scroll to zoom.</p>
+      <div id="map" class="plot"></div>
+    </div>
+  </div>
+
+  <p id="status">Loading stars…</p>
+
+  <footer>
+    Data: ESA Gaia mission, Gaia Data Release 3 (Gaia Collaboration, Vallenari et al. 2023), via the
+    <a href="https://gea.esac.esa.int/archive/">ESA Gaia Archive</a>. Shown: a random 60,000 of the
+    228,623 stars with parallax &gt; 10 mas, parallax/error &gt; 10 and RUWE &lt; 1.4.
+    Group boundaries are simple straight-line cuts, so treat each group as candidates.
+  </footer>
+</div>
+
+<script>
+// ---------- colours come from the CSS tokens, so the plots follow light/dark mode
+function token(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// ---------- groups of stars, defined by where they sit on the HR diagram
+// c = colour (BP - RP), g = absolute G magnitude (smaller = brighter)
+const isWhiteDwarf = (c, g) => g > 3.33 * c + 9.5;
+const REGIONS = {
+  wd:      (c, g) => isWhiteDwarf(c, g),
+  giants:  (c, g) => g < 3.5 && c > 0.9,
+  sunlike: (c, g) => c > 0.72 && c < 0.92 && g > 4.0 && g < 5.6,  // the Sun: BP-RP ≈ 0.82, G ≈ 4.67
+  hot:     (c, g) => c < 0.3 && g < 3.5,
+  red:     (c, g) => c > 2.5 && !isWhiteDwarf(c, g),
+  none:    () => false,
+};
+
+let stars, selected = [], allMedianZ = 0;
+const median = arr => { if (!arr.length) return NaN; const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+const fmt = (v, unit) => Number.isFinite(v) ? `${v.toFixed(0)} ${unit}` : "–";
+
+function axisStyle(title) {
+  return { title: { text: title, font: { size: 12 } }, gridcolor: token("--line"), zeroline: false,
+           linecolor: token("--line"), color: token("--ink-soft") };
+}
+
+function drawHR() {
+  const ink = token("--ink-soft");
+  Plotly.react("hr", [{
+    type: "scattergl", mode: "markers", x: stars.bp_rp, y: stars.abs_g,
+    marker: { size: 2.5, color: token("--star") },
+    selectedpoints: selected,
+    selected: { marker: { color: token("--pick"), size: 3.5, opacity: 1 } },
+    unselected: { marker: { opacity: selected.length ? 0.35 : 0.8 } },
+    hovertemplate: "Colour %{x:.2f}<br>Abs. G %{y:.2f}<extra></extra>",
+  }], {
+    margin: { l: 50, r: 10, t: 10, b: 45 }, dragmode: "lasso", hovermode: "closest",
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { family: "Inter, system-ui", color: ink },
+    xaxis: { ...axisStyle("Colour BP − RP  (blue → red)"), range: [-0.8, 5.4] },
+    yaxis: { ...axisStyle("Absolute G magnitude  (bright ↑)"), range: [20, -2.5] },
+    showlegend: false, uirevision: "hr",
+  }, { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"] });
+}
+
+function drawMap() {
+  const sel = { x: [], y: [], z: [] };
+  for (const i of selected) { sel.x.push(stars.x[i]); sel.y.push(stars.y[i]); sel.z.push(stars.z[i]); }
+  // Show a lighter background (every 4th star) so the 3D view stays smooth.
+  const bg = { x: [], y: [], z: [] };
+  for (let i = 0; i < stars.x.length; i += 4) { bg.x.push(stars.x[i]); bg.y.push(stars.y[i]); bg.z.push(stars.z[i]); }
+  const ax = t => ({ ...axisStyle(t), range: [-105, 105], backgroundcolor: "rgba(0,0,0,0)", showbackground: false });
+  Plotly.react("map", [
+    { type: "scatter3d", mode: "markers", name: "All stars", ...bg, hoverinfo: "skip",
+      marker: { size: 1, color: token("--star"), opacity: selected.length ? 0.25 : 0.6 } },
+    { type: "scatter3d", mode: "markers", name: "Selected", ...sel,
+      marker: { size: 1.8, color: token("--pick"), opacity: 0.9 },
+      hovertemplate: "x %{x} pc<br>y %{y} pc<br>z %{z} pc<extra></extra>" },
+    { type: "scatter3d", mode: "markers+text", name: "Sun", x: [0], y: [0], z: [0], text: ["Sun"],
+      textposition: "top center", textfont: { color: token("--ink"), size: 12 },
+      marker: { size: 6, color: token("--sun"), line: { color: token("--ink"), width: 1 } }, hoverinfo: "skip" },
+  ], {
+    margin: { l: 0, r: 0, t: 0, b: 0 }, showlegend: false,
+    paper_bgcolor: "rgba(0,0,0,0)", font: { family: "Inter, system-ui", color: token("--ink-soft") },
+    scene: { aspectmode: "cube", xaxis: ax("x → Galactic centre"), yaxis: ax("y → direction of orbit"),
+             zaxis: ax("z → north"), camera: { eye: { x: 1.5, y: -1.5, z: 0.8 } } },
+    uirevision: "map",
+  }, { responsive: true, displaylogo: false, modeBarButtonsToRemove: ["toImage"] });
+}
+
+function updateStats() {
+  const d = selected.map(i => Math.hypot(stars.x[i], stars.y[i], stars.z[i]));
+  const z = selected.map(i => Math.abs(stars.z[i]));
+  document.getElementById("n-sel").textContent = selected.length.toLocaleString();
+  document.getElementById("d-sel").textContent = fmt(median(d), "pc");
+  document.getElementById("z-sel").textContent = fmt(median(z), "pc");
+  document.getElementById("z-all").textContent = fmt(allMedianZ, "pc");
+}
+
+function select(indices, regionName) {
+  selected = indices;
+  document.querySelectorAll("[data-region]").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.region === regionName && regionName !== "none")));
+  drawHR(); drawMap(); updateStats();
+}
+
+function selectRegion(name) {
+  const test = REGIONS[name], idx = [];
+  for (let i = 0; i < stars.bp_rp.length; i++) if (test(stars.bp_rp[i], stars.abs_g[i])) idx.push(i);
+  select(idx, name);
+}
+
+fetch("stars.json")
+  .then(r => { if (!r.ok) throw new Error(`stars.json returned HTTP ${r.status}`); return r.json(); })
+  .then(data => {
+    stars = data;
+    allMedianZ = median(stars.z.map(Math.abs));
+    document.getElementById("status").textContent =
+      `Showing ${data.sample_size.toLocaleString()} of ${data.total_stars.toLocaleString()} stars.`;
+    selectRegion("wd");   // open on the project's question: where are the white dwarfs?
+    const hr = document.getElementById("hr");
+    hr.on("plotly_selected", ev => { if (ev) select(ev.points.map(p => p.pointIndex), "lasso"); });
+    hr.on("plotly_deselect", () => select([], "none"));
+    document.querySelectorAll("[data-region]").forEach(b => b.addEventListener("click", () => selectRegion(b.dataset.region)));
+    // Redraw in the new colours when the viewer switches light/dark mode.
+    const redraw = () => { drawHR(); drawMap(); };
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+    new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  })
+  .catch(err => {
+    document.getElementById("status").textContent =
+      `Could not load the star data (${err.message}). If you opened this file directly, run "python3 -m http.server" in this folder and open http://localhost:8000.`;
+  });
+</script>
