@@ -6,27 +6,31 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <!--
-  Project 24: a clickable 3D map of every star within 100 parsecs of the Sun.
+  Project 24 Thursday prototype: a clickable 3D map of every star within 100 parsecs of the Sun,
+  linked to an HR diagram of the same stars.
+    - Draw a loop on the HR diagram: those stars light up in the 3D map.
+    - Click a dot on the HR diagram, or a star in 3D: it is identified, and marked in both views.
   Data file: stars.json, written by prototypes/24_gaia_starmap.py (Gaia DR3 + SIMBAD).
   To open it on your own computer, run   python3 -m http.server   inside this folder and visit
   http://localhost:8000 (browsers refuse to load stars.json straight from a file:// page).
 -->
 <style>
-  /* Layout: the star field fills the window; controls float at the top, a star card pops up beside the clicked star.
-     Deliberately one dark look in every theme: it is a view of space. */
+  /* Layout: the star field fills the window; controls float at the top, the HR diagram sits bottom-left,
+     and a star card pops up beside the clicked star. Deliberately one dark look in every theme: it is a view of space. */
   :root {
     --bg: #04060b;
-    --panel: rgba(13, 18, 29, 0.88);
+    --panel: rgba(13, 18, 29, 0.9);
     --ink: #e8edf6;
     --ink-soft: #97a3b8;
     --line: #283246;
-    --accent: #7fd4ff;      /* selection ring, active buttons, links */
+    --accent: #7fd4ff;      /* selection ring, lasso, active buttons, links */
     --sun: #ffc94d;
     --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
     --font-body: "Inter", system-ui, -apple-system, sans-serif;
     --font-data: "JetBrains Mono", ui-monospace, Menlo, monospace;
     color-scheme: dark;
   }
+  [hidden] { display: none !important; }   /* keep hidden things hidden even when opened locally */
   html, body { height: 100%; }
   body { background: var(--bg); color: var(--ink); font: 14px/1.45 var(--font-body); overflow: hidden; }
   #sky { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
@@ -55,25 +59,37 @@
   }
   button:hover { color: var(--accent); }
   button[aria-pressed="true"] { background: var(--accent); color: #04121c; }
-  button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .search { display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px 0 12px; }
+  button:focus-visible, input:focus-visible, a:focus-visible, canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .search { display: flex; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; }
   .search input { background: transparent; border: 0; color: var(--ink); font: 13px var(--font-body); padding: 8px 0; width: 15ch; outline: none; }
   .search input::placeholder { color: var(--ink-soft); }
 
-  /* Labels for famous stars and the Sun, placed each frame from 3D positions */
   .label { position: fixed; left: 0; top: 0; pointer-events: none; font: 500 11.5px/1 var(--font-body);
            color: var(--ink-soft); white-space: nowrap; text-shadow: 0 0 4px var(--bg), 0 0 8px var(--bg); }
   .label.sun { color: var(--sun); font-weight: 600; }
   .label.scale { color: #5c6880; font: 10.5px/1 var(--font-data); }
   #tip { position: fixed; left: 0; top: 0; pointer-events: none; font: 500 12px/1 var(--font-body);
-         background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; }
+         background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; z-index: 5; }
+
+  /* The linked HR diagram */
+  #panel {
+    position: fixed; left: max(16px, env(safe-area-inset-left, 0px)); bottom: calc(34px + env(safe-area-inset-bottom, 0px));
+    width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; display: grid; gap: 6px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  #panel h2 { font: 600 14px/1.2 var(--font-display); margin: 0; }
+  #panel .cap { font-size: 12px; color: var(--ink-soft); margin: 0; }
+  #panel .sel { font-size: 12px; display: flex; gap: 8px; align-items: center; min-height: 26px; flex-wrap: wrap; }
+  #panel .sel b { font: 500 12.5px var(--font-data); }
+  #panel .sel button { padding: 5px 9px; font-size: 12px; }
+  #diagram { width: 100%; height: 280px; display: block; cursor: crosshair; touch-action: none; border-radius: 6px; }
 
   /* The star card */
   #card {
-    position: fixed; left: 0; top: 0; width: min(330px, calc(100vw - 32px));
+    position: fixed; left: 0; top: 0; width: 330px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-    padding: 14px 16px 14px; display: grid; gap: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.45);
+    padding: 14px 16px; display: grid; gap: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.45); z-index: 4;
   }
   #card header { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: start; }
   #swatch { width: 14px; height: 14px; border-radius: 50%; margin-top: 5px; box-shadow: 0 0 10px currentColor; }
@@ -96,17 +112,7 @@
     display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px;
     font-size: 11.5px; color: #66728a;
   }
-  footer a { color: inherit; pointer-events: auto; }
   #status { color: var(--ink-soft); }
-
-  @media (max-width: 640px) {
-    .controls { justify-items: start; }
-    .row { justify-content: flex-start; }
-    .hint { display: none; }
-    #card { left: 50% !important; top: auto !important; transform: translateX(-50%) !important;
-            bottom: calc(12px + env(safe-area-inset-bottom, 0px)); position: fixed; }
-    footer { display: none; }
-  }
 </style>
 
 <canvas id="sky" aria-label="3D map of stars within 100 parsecs of the Sun"></canvas>
@@ -129,10 +135,10 @@
       </label>
     </div>
     <div class="row" role="group" aria-label="Highlight a group">
-      <button id="grp-all" data-group="all" aria-pressed="true">All stars</button>
-      <button id="grp-wd" data-group="wd" aria-pressed="false">White dwarfs</button>
-      <button id="grp-giants" data-group="giants" aria-pressed="false">Giants</button>
-      <button id="grp-named" data-group="named" aria-pressed="false">Named stars</button>
+      <button data-group="all" aria-pressed="true">All stars</button>
+      <button data-group="wd" aria-pressed="false">White dwarfs</button>
+      <button data-group="giants" aria-pressed="false">Giants</button>
+      <button data-group="named" aria-pressed="false">Named stars</button>
       <button id="labels" aria-pressed="true">Labels</button>
     </div>
   </div>
@@ -140,6 +146,13 @@
 
 <div id="labels-layer"></div>
 <div id="tip" hidden></div>
+
+<section id="panel" aria-label="HR diagram linked to the 3D map">
+  <h2>HR diagram</h2>
+  <p class="cap">Draw a loop around part of the diagram to light those stars up in 3D. Click a dot to identify it.</p>
+  <canvas id="diagram" tabindex="0" aria-label="HR diagram: draw a loop to select stars"></canvas>
+  <div class="sel" id="sel-info"></div>
+</section>
 
 <section id="card" hidden aria-live="polite">
   <header>
@@ -167,12 +180,11 @@ const GREEK = { alf:"α", bet:"β", gam:"γ", del:"δ", eps:"ε", zet:"ζ", eta:
 // SIMBAD writes "* alf CMa" for α CMa, "V* AX Mic" for the variable star AX Mic, "NAME ..." for common names.
 function prettyId(id) {
   if (!id) return "";
-  let s = id.replace(/^NAME /, "").replace(/^(\*\*|\*|V\*) /, "");
+  const s = id.replace(/^NAME /, "").replace(/^(\*\*|\*|V\*) /, "");
   return s.replace(/^(alf|bet|gam|del|eps|zet|eta|tet|iot|kap|lam|mu\.|nu\.|ksi|omi|pi\.|rho|sig|tau|ups|phi|chi|psi|ome)(0?(\d))?(?= )/,
     (m, g, _, n) => GREEK[g] + (n || ""));
 }
-// SIMBAD object-type codes, in plain words (anything else is shown as its code).
-const TYPES = {
+const TYPES = {   // SIMBAD object-type codes, in plain words (anything else is shown as its code)
   "*": "Star", "PM*": "Star with high proper motion (moves fast across the sky)", "WD*": "White dwarf",
   "WD?": "White dwarf candidate", "LM*": "Low-mass star", "BD*": "Brown dwarf", "BD?": "Brown dwarf candidate",
   "**": "Double star", "SB*": "Spectroscopic binary", "EB*": "Eclipsing binary", "V*": "Variable star",
@@ -185,18 +197,17 @@ const TYPES = {
   "Be*": "Be star (fast-spinning hot star)", "El*": "Ellipsoidal variable", "SX*": "SX Phoenicis variable",
   "PM?": "High proper-motion star candidate", "Pl": "Planet", "Pl?": "Planet candidate",
 };
-// Rough kind of star from where it sits on the HR diagram (colour c = BP-RP, absolute magnitude g).
-function hrKind(c, g) {
-  if (g > 3.33 * c + 9.5) return "White dwarf (hot, Earth-sized remnant of a star)";
+const isWhiteDwarf = (c, g) => g > 3.33 * c + 9.5;
+function hrKind(c, g) {   // rough kind of star from where it sits on the HR diagram (c = BP-RP, g = absolute magnitude)
+  if (isWhiteDwarf(c, g)) return "White dwarf (hot, Earth-sized remnant of a star)";
   if (g < 3.5 && c > 0.9) return "Giant (an old star that has swollen up)";
   const type = c < -0.1 ? "B" : c < 0.38 ? "A" : c < 0.7 ? "F" : c < 0.98 ? "G" : c < 1.84 ? "K" : "M";
   const words = { B: "hot blue-white", A: "hot white", F: "white", G: "yellow, Sun-like", K: "orange", M: "cool red" };
   return `Main-sequence ${type}-type star (${words[type]})`;
 }
-// Approximate star colour for a given BP-RP colour (blackbody-like tints).
 const TINTS = [[-0.4,"#9bb0ff"],[0,"#aabfff"],[0.35,"#d5e0ff"],[0.6,"#f6f4ff"],[0.82,"#fff4e6"],[1.2,"#ffd6a5"],
                [1.8,"#ffbb73"],[2.5,"#ff9d55"],[3.5,"#ff8040"],[5,"#ff6030"]];
-function tint(c) {
+function tint(c) {        // approximate colour of a star with BP-RP colour c (blackbody-like tints)
   if (c <= TINTS[0][0]) return new THREE.Color(TINTS[0][1]);
   for (let i = 1; i < TINTS.length; i++) if (c <= TINTS[i][0]) {
     const [c0, h0] = TINTS[i-1], [c1, h1] = TINTS[i];
@@ -205,16 +216,13 @@ function tint(c) {
   return new THREE.Color(TINTS[TINTS.length-1][1]);
 }
 const fmtNum = (v, d = 1) => v.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
-function fmtTimes(x) {   // 0.0031 -> "0.003×", 25.3 -> "25×"
-  if (x >= 10) return `${Math.round(x).toLocaleString()}×`;
-  if (x >= 0.1) return `${x.toFixed(1)}×`;
-  return `${x.toPrecision(1)}×`;
-}
+function fmtTimes(x) { if (x >= 10) return `${Math.round(x).toLocaleString()}×`; if (x >= 0.1) return `${x.toFixed(1)}×`; return `${x.toPrecision(1)}×`; }
 
 // ============================================================ the 3D scene
 const canvas = document.getElementById("sky");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const PX = renderer.getPixelRatio();
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, 1, 0.001, 3000);
 camera.up.set(0, 0, 1);                       // Galactic north is "up"
@@ -222,7 +230,7 @@ const controls = new THREE.OrbitControls(camera, canvas);
 controls.enableDamping = true; controls.dampingFactor = 0.08;
 
 const ORBIT_HOME = new THREE.Vector3(150, -200, 110);
-let mode = "orbit", stars, N = 0, pos, absg, colour, pickable, selected = -1;
+let mode = "orbit", stars, N = 0, pos, absg, pickable, selected = -1;
 let geometry, material;
 
 // Scale rings in the Galactic plane (25, 50, 100 pc), so distances are easy to judge when flying around.
@@ -241,18 +249,19 @@ scene.add(sunDot);
 
 // Ring that marks the selected star.
 const ringGeo = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0], 3));
-const ringMat = new THREE.ShaderMaterial({
+const selRing = new THREE.Points(ringGeo, new THREE.ShaderMaterial({
   transparent: true, depthTest: false,
-  uniforms: { uColor: { value: new THREE.Color(0x7fd4ff) }, uPx: { value: renderer.getPixelRatio() } },
+  uniforms: { uColor: { value: new THREE.Color(0x7fd4ff) }, uPx: { value: PX } },
   vertexShader: `uniform float uPx; void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_PointSize = 28.0 * uPx; }`,
   fragmentShader: `uniform vec3 uColor; void main(){ float r = length(gl_PointCoord - 0.5);
     float a = smoothstep(0.5, 0.44, r) * smoothstep(0.34, 0.40, r); if (a < 0.01) discard; gl_FragColor = vec4(uColor, a); }`,
-});
-const selRing = new THREE.Points(ringGeo, ringMat); selRing.visible = false; scene.add(selRing);
+}));
+selRing.visible = false; scene.add(selRing);
 
 // Star shader: each star is a soft round dot in its own colour.
 //  "Fly around": dot size depends on the star's true brightness (absolute magnitude) and shrinks with distance from the camera.
 //  "Stand at the Sun": dot size depends on how bright the star looks from Earth (apparent magnitude), like the real sky.
+//  "dim" is 1 for highlighted stars and small for the rest (groups and HR-diagram selections).
 const STAR_VERTEX = `
   attribute float absg; attribute vec3 tint; attribute float dim;
   uniform float uSunMode; uniform float uPx; uniform float uGroup;
@@ -285,7 +294,7 @@ const STAR_FRAGMENT = `
 
 // ============================================================ labels (famous stars, the Sun, ring distances)
 const labelLayer = document.getElementById("labels-layer");
-let labels = [];
+const labels = [];
 function addLabel(text, x, y, z, cls = "") {
   const el = document.createElement("div"); el.className = "label " + cls; el.textContent = text;
   labelLayer.appendChild(el); labels.push({ el, p: new THREE.Vector3(x, y, z), cls });
@@ -304,7 +313,7 @@ fetch("stars.json")
 function build(data) {
   stars = data; N = data.x.length;
   pos = new Float32Array(N * 3); absg = new Float32Array(N); const tints = new Float32Array(N * 3);
-  const dim = new Float32Array(N).fill(1); pickable = new Uint8Array(N).fill(1);
+  pickable = new Uint8Array(N).fill(1);
   for (let i = 0; i < N; i++) {
     pos[3*i] = data.x[i]; pos[3*i+1] = data.y[i]; pos[3*i+2] = data.z[i];
     absg[i] = data.abs_g[i];
@@ -314,11 +323,11 @@ function build(data) {
   geometry.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geometry.setAttribute("absg", new THREE.BufferAttribute(absg, 1));
   geometry.setAttribute("tint", new THREE.BufferAttribute(tints, 3));
-  geometry.setAttribute("dim", new THREE.BufferAttribute(dim, 1));
+  geometry.setAttribute("dim", new THREE.BufferAttribute(new Float32Array(N).fill(1), 1));
   material = new THREE.ShaderMaterial({
     vertexShader: STAR_VERTEX, fragmentShader: STAR_FRAGMENT, transparent: true, depthWrite: false,
     blending: THREE.AdditiveBlending,
-    uniforms: { uSunMode: { value: 0 }, uPx: { value: renderer.getPixelRatio() }, uGroup: { value: 0 } },
+    uniforms: { uSunMode: { value: 0 }, uPx: { value: PX }, uGroup: { value: 0 } },
   });
   scene.add(new THREE.Points(geometry, material));
 
@@ -338,6 +347,8 @@ function build(data) {
   document.getElementById("status").textContent =
     `${N.toLocaleString()} stars: a random 60,000 of Gaia's ${data.total_stars.toLocaleString()}, every named Gaia star, and ${data.bright_added} naked-eye stars from SIMBAD.`;
   setMode("orbit");
+  updateSelInfo(null);
+  drawDiagram();
   const start = data.name.indexOf("Sirius");     // open on a familiar star so the card is visible at once
   if (start >= 0) select(start);
 }
@@ -378,20 +389,27 @@ canvas.addEventListener("wheel", e => {             // in Sun mode, scrolling zo
   camera.updateProjectionMatrix();
 }, { passive: false });
 
-// ============================================================ highlight groups
+// ============================================================ highlighting (used by the group buttons and the HR diagram)
+// Highlight only the stars where keep(i) is true, or all of them when keep is null.
+function highlight(keep) {
+  const dim = geometry.attributes.dim.array;
+  for (let i = 0; i < N; i++) { const on = !keep || keep(i); dim[i] = on ? 1 : 0.07; pickable[i] = on ? 1 : 0; }
+  geometry.attributes.dim.needsUpdate = true;
+  material.uniforms.uGroup.value = keep ? 1 : 0;
+}
 const GROUPS = {
-  all: () => true,
-  wd: i => absg[i] > 3.33 * stars.colour[i] + 9.5,
+  all: null,
+  wd: i => isWhiteDwarf(stars.colour[i], absg[i]),
   giants: i => absg[i] < 3.5 && stars.colour[i] > 0.9,
   named: i => !!stars.name[i],
 };
 document.querySelectorAll("[data-group]").forEach(btn => btn.onclick = () => {
   if (!stars) return;
-  const test = GROUPS[btn.dataset.group], dim = geometry.attributes.dim.array;
-  for (let i = 0; i < N; i++) { const on = test(i); dim[i] = on ? 1 : 0.07; pickable[i] = on ? 1 : 0; }
-  geometry.attributes.dim.needsUpdate = true;
-  material.uniforms.uGroup.value = btn.dataset.group === "all" ? 0 : 1;
+  lasso.poly = null;
+  highlight(GROUPS[btn.dataset.group]);
   document.querySelectorAll("[data-group]").forEach(b => b.setAttribute("aria-pressed", String(b === btn)));
+  updateSelInfo(btn.dataset.group === "all" ? null : btn.textContent);
+  drawDiagram();
 });
 const labelsBtn = document.getElementById("labels");
 labelsBtn.onclick = () => {
@@ -399,7 +417,7 @@ labelsBtn.onclick = () => {
   labelsBtn.setAttribute("aria-pressed", String(on)); labelLayer.hidden = !on;
 };
 
-// ============================================================ clicking and hovering on stars
+// ============================================================ clicking and hovering on stars in 3D
 // We find the star whose dot is closest to the pointer on screen (within a few pixels).
 const projM = new THREE.Matrix4();
 function pick(clientX, clientY) {
@@ -459,7 +477,7 @@ function select(i) {
   ringGeo.attributes.position.needsUpdate = true; selRing.visible = true;
 
   const fromGaia = !!stars.gaia[i], c = stars.colour[i], g = absg[i], d = dist(i), m = apparentMag(i);
-  const sw = tint(c); document.getElementById("swatch").style.color = document.getElementById("swatch").style.background = `#${sw.getHexString()}`;
+  const sw = document.getElementById("swatch"); sw.style.color = sw.style.background = `#${tint(c).getHexString()}`;
   document.getElementById("c-title").textContent = displayName(i);
   const cat = prettyId(stars.simbad[i]);
   const subParts = [];
@@ -489,19 +507,25 @@ function select(i) {
   document.getElementById("c-centre").hidden = mode !== "orbit";
   card.hidden = false;
   placeCard();
+  drawDiagram();                                    // mark the star on the HR diagram too
 }
-function closeCard() { selected = -1; card.hidden = true; selRing.visible = false; }
+function closeCard() { selected = -1; card.hidden = true; selRing.visible = false; drawDiagram(); }
 document.getElementById("close").onclick = closeCard;
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeCard(); });
 
-// Centre the view on the selected star (fly-around mode).
+// Centre the view on the selected star (fly-around mode), or turn to face it (Sun mode).
 let flyTo = null;
-document.getElementById("c-centre").onclick = () => {
-  if (selected < 0) return;
-  const target = new THREE.Vector3(pos[3*selected], pos[3*selected+1], pos[3*selected+2]);
-  const offset = camera.position.clone().sub(controls.target).setLength(Math.max(12, Math.min(60, dist(selected) * 0.6)));
-  flyTo = { target, camPos: target.clone().add(offset), t: 0 };
-};
+function goTo(i) {
+  if (mode === "orbit") {
+    const target = new THREE.Vector3(pos[3*i], pos[3*i+1], pos[3*i+2]);
+    const offset = camera.position.clone().sub(controls.target).setLength(Math.max(12, Math.min(60, dist(i) * 0.6)));
+    flyTo = { target, camPos: target.clone().add(offset), t: 0 };
+  } else {   // put the camera just behind the Sun, opposite the star
+    camera.position.copy(new THREE.Vector3(pos[3*i], pos[3*i+1], pos[3*i+2]).normalize().multiplyScalar(-0.001));
+    controls.update();
+  }
+}
+document.getElementById("c-centre").onclick = () => { if (selected >= 0) goTo(selected); };
 
 // Search: pick a named star, highlight it, and point the camera at it.
 document.getElementById("find").addEventListener("change", e => {
@@ -509,32 +533,140 @@ document.getElementById("find").addEventListener("change", e => {
   const q = e.target.value.trim().toLowerCase();
   const i = stars.name.findIndex(n => n.toLowerCase() === q);
   if (i < 0) return;
-  select(i);
-  if (mode === "orbit") document.getElementById("c-centre").click();
-  else {   // turn to face the star: put the camera just behind the Sun, opposite the star
-    const dir = new THREE.Vector3(pos[3*i], pos[3*i+1], pos[3*i+2]).normalize();
-    camera.position.copy(dir.multiplyScalar(-0.001)); controls.update();
-  }
+  select(i); goTo(i);
   e.target.blur();
 });
 
-// Keep the card next to its star as the view moves (on phones it sits at the bottom instead).
+// Keep the card next to its star as the view moves, clear of the HR diagram panel.
 const tmpV = new THREE.Vector3();
+const panel = document.getElementById("panel");
 function placeCard() {
-  if (selected < 0 || matchMedia("(max-width: 640px)").matches) return;
+  if (selected < 0) return;
   tmpV.set(pos[3*selected], pos[3*selected+1], pos[3*selected+2]).project(camera);
   const w = innerWidth, h = innerHeight, cw = card.offsetWidth, ch = card.offsetHeight;
   let x = (tmpV.x * 0.5 + 0.5) * w + 22, y = (-tmpV.y * 0.5 + 0.5) * h - 30;
   if (tmpV.z > 1) { x = w - cw - 16; y = h - ch - 40; }         // star is behind us: park the card
   if (x + cw > w - 16) x = (tmpV.x * 0.5 + 0.5) * w - cw - 22;  // flip to the left side of the star
   x = Math.max(16, Math.min(x, w - cw - 16)); y = Math.max(110, Math.min(y, h - ch - 34));
+  const pr = panel.getBoundingClientRect();
+  if (x < pr.right + 12 && y + ch > pr.top - 12) x = Math.min(pr.right + 12, w - cw - 16);   // keep clear of the HR diagram
   card.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+// ============================================================ the linked HR diagram
+// The same stars as the 3D map, placed by colour (x) and absolute magnitude (y, bright at the top).
+//   Draw a loop: the stars inside it light up in 3D (everything else dims).
+//   Click a dot: that star is selected, identified and centred in 3D.
+// Group buttons and 3D clicks show up here as well, so the two views always agree.
+const dg = document.getElementById("diagram"), ctx = dg.getContext("2d");
+const XR = [-0.7, 5.2], YR = [-2.5, 19.5];      // colour range; magnitude from top (bright) to bottom (faint)
+const M = { l: 40, r: 8, t: 8, b: 30 };          // margins in pixels
+const lasso = { drawing: false, path: [], poly: null };
+
+function geom() { const r = dg.getBoundingClientRect(); return { W: r.width, H: r.height }; }
+function toPx(g, c, mag) {
+  return [M.l + (c - XR[0]) / (XR[1] - XR[0]) * (g.W - M.l - M.r),
+          M.t + (mag - YR[0]) / (YR[1] - YR[0]) * (g.H - M.t - M.b)];
+}
+function drawDiagram() {
+  const g = geom();
+  if (dg.width !== Math.round(g.W * PX) || dg.height !== Math.round(g.H * PX)) { dg.width = Math.round(g.W * PX); dg.height = Math.round(g.H * PX); }
+  ctx.setTransform(PX, 0, 0, PX, 0, 0); ctx.clearRect(0, 0, g.W, g.H);
+
+  // grid and axis labels
+  ctx.font = "10.5px Inter, system-ui, sans-serif"; ctx.fillStyle = "#97a3b8"; ctx.strokeStyle = "#1f2a3d"; ctx.lineWidth = 1;
+  ctx.textAlign = "center";
+  for (let c = 0; c <= 5; c++) { const [px] = toPx(g, c, 0); ctx.beginPath(); ctx.moveTo(px, M.t); ctx.lineTo(px, g.H - M.b); ctx.stroke(); ctx.fillText(String(c), px, g.H - M.b + 12); }
+  ctx.textAlign = "right";
+  for (let mag = 0; mag <= 15; mag += 5) { const [, py] = toPx(g, 0, mag); ctx.beginPath(); ctx.moveTo(M.l, py); ctx.lineTo(g.W - M.r, py); ctx.stroke(); ctx.fillText(String(mag), M.l - 5, py + 3.5); }
+  ctx.textAlign = "center"; ctx.fillText("Colour BP − RP  (blue → red)", M.l + (g.W - M.l - M.r) / 2, g.H - 4);
+  ctx.save(); ctx.translate(10, M.t + (g.H - M.t - M.b) / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("Absolute magnitude (bright ↑)", 0, 0); ctx.restore();
+  if (!stars) return;
+
+  ctx.save(); ctx.beginPath(); ctx.rect(M.l, M.t, g.W - M.l - M.r, g.H - M.t - M.b); ctx.clip();
+  // stars: dimmed ones first, highlighted ones on top
+  const anyDim = material.uniforms.uGroup.value > 0.5;
+  for (let pass = 0; pass < 2; pass++) for (let i = 0; i < N; i++) {
+    const hi = !anyDim || pickable[i];
+    if ((pass === 0) === Boolean(hi)) continue;
+    const [px, py] = toPx(g, stars.colour[i], absg[i]);
+    ctx.fillStyle = !hi ? "rgba(120,130,150,0.18)" : anyDim ? "#7fd4ff" : "rgba(200,210,230,0.55)";
+    const s = hi && anyDim ? 2 : 1.4; ctx.fillRect(px - s / 2, py - s / 2, s, s);
+  }
+  // the selected star
+  if (selected >= 0) {
+    const [px, py] = toPx(g, stars.colour[selected], absg[selected]);
+    ctx.strokeStyle = "#7fd4ff"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(px, py, 7, 0, 2 * Math.PI); ctx.stroke();
+  }
+  // the loop being drawn, or the last one
+  const path = lasso.drawing ? lasso.path : lasso.poly;
+  if (path && path.length > 1) {
+    ctx.strokeStyle = "#7fd4ff"; ctx.fillStyle = "rgba(127,212,255,0.08)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); path.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+}
+function inside(poly, x, y) {    // is point (x, y) inside the loop? (ray casting)
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+const local = e => { const r = dg.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+dg.addEventListener("pointerdown", e => { if (!stars) return; dg.setPointerCapture(e.pointerId); lasso.drawing = true; lasso.path = [local(e)]; });
+dg.addEventListener("pointermove", e => { if (!lasso.drawing) return; lasso.path.push(local(e)); drawDiagram(); });
+dg.addEventListener("pointerup", () => {
+  if (!lasso.drawing) return;
+  lasso.drawing = false;
+  const g = geom(), path = lasso.path, [x0, y0] = path[0];
+  const span = Math.max(...path.map(p => Math.hypot(p[0] - x0, p[1] - y0)));
+  if (span < 6) { clickDiagram(g, x0, y0); drawDiagram(); return; }   // a click, not a loop
+  lasso.poly = path;
+  const keep = new Uint8Array(N); let n = 0;
+  for (let i = 0; i < N; i++) {
+    const [px, py] = toPx(g, stars.colour[i], absg[i]);
+    if (inside(path, px, py)) { keep[i] = 1; n++; }
+  }
+  highlight(i => keep[i] === 1);
+  document.querySelectorAll("[data-group]").forEach(b => b.setAttribute("aria-pressed", "false"));
+  updateSelInfo(`${n.toLocaleString()} stars in your loop`, keep);
+  drawDiagram();
+});
+function clickDiagram(g, x, y) {   // select the star whose dot is nearest the click (within 8 px)
+  let best = -1, bestD = 8;
+  for (let i = 0; i < N; i++) {
+    if (!pickable[i]) continue;
+    const [px, py] = toPx(g, stars.colour[i], absg[i]);
+    const d = Math.hypot(px - x, py - y);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best >= 0) { select(best); goTo(best); }
+}
+function clearSelection() {
+  lasso.poly = null; highlight(null);
+  document.querySelectorAll("[data-group]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.group === "all")));
+  updateSelInfo(null); drawDiagram();
+}
+function updateSelInfo(text, keep) {
+  const box = document.getElementById("sel-info");
+  if (!text) { box.innerHTML = `<span style="color: var(--ink-soft)">Nothing selected: showing all stars.</span>`; return; }
+  let extra = "";
+  if (keep) {   // the typical distance of the stars in the loop
+    const d = []; for (let i = 0; i < N; i++) if (keep[i]) d.push(dist(i));
+    d.sort((a, b) => a - b);
+    if (d.length) extra = ` · median distance <b>${fmtNum(d[Math.floor(d.length / 2)], 0)} pc</b>`;
+  }
+  box.innerHTML = `<span><b>${text}</b>${extra}</span><button id="clear-sel">Clear</button>`;
+  document.getElementById("clear-sel").onclick = clearSelection;
 }
 
 // ============================================================ draw loop
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+  drawDiagram();
 }
 addEventListener("resize", resize); resize();
 
